@@ -1,0 +1,664 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { HelpCircle, Trophy, Zap, Fish, Users, Settings, XCircle, Home, Palmtree, Anchor, Sun, Cloud } from 'lucide-react';
+
+// --- Tipe Data & Utility ---
+
+type Difficulty = 'mudah' | 'sedang';
+
+interface Problem {
+  question: string;
+  variableNeeded: string;
+  unit: string;
+  answer: number;
+  knowns: { label: string; value: number; unit: string }[];
+  explanation: string;
+}
+
+const generateProblem = (diff: Difficulty): Problem => {
+  const isEasy = diff === 'mudah';
+  // Tipe soal: 0 = Cari Jarak (s), 1 = Cari Vt, 2 = Cari Waktu (t), 3 = Cari Percepatan (a)
+  const types = isEasy ? [0, 1] : [0, 1, 2, 3];
+  const type = types[Math.floor(Math.random() * types.length)];
+  
+  let v0 = 0;
+  if (!isEasy && Math.random() > 0.7) v0 = Math.floor(Math.random() * 5) + 1;
+
+  let a = Math.floor(Math.random() * 4) + 1; // 1 - 5 m/s^2
+  let t = Math.floor(Math.random() * 5) + 2; // 2 - 6 s
+
+  const vt = v0 + (a * t);
+  const s = (v0 * t) + (0.5 * a * t * t);
+
+  if (type === 0) { // Cari S
+    return {
+      question: `Tim menarik ikan dengan percepatan ${a} m/s² selama ${t} detik (v₀=${v0} m/s). Berapa jarak tempuh tarikan?`,
+      variableNeeded: 's (Jarak)',
+      unit: 'meter',
+      answer: s,
+      knowns: [
+        { label: 'v₀', value: v0, unit: 'm/s' },
+        { label: 'a', value: a, unit: 'm/s²' },
+        { label: 't', value: t, unit: 's' }
+      ],
+      explanation: `Rumus: s = v₀.t + ½.a.t²\nHitungan: (${v0} × ${t}) + (0.5 × ${a} × ${t}²) = ${s} m`
+    };
+  } else if (type === 1) { // Cari Vt
+    return {
+      question: `Ikan ditarik dengan v₀=${v0} m/s dan percepatan ${a} m/s². Berapa kecepatan saat detik ke-${t}?`,
+      variableNeeded: 'vt (Kecepatan Akhir)',
+      unit: 'm/s',
+      answer: vt,
+      knowns: [
+        { label: 'v₀', value: v0, unit: 'm/s' },
+        { label: 'a', value: a, unit: 'm/s²' },
+        { label: 't', value: t, unit: 's' }
+      ],
+      explanation: `Rumus: vt = v₀ + a.t\nHitungan: ${v0} + (${a} × ${t}) = ${vt} m/s`
+    };
+  } else if (type === 2) { // Cari t
+     return {
+      question: `Kail bergerak dari diam (v₀=0) hingga kecepatan ${vt} m/s dengan percepatan ${a} m/s². Berapa lama waktunya?`,
+      variableNeeded: 't (Waktu)',
+      unit: 'detik',
+      answer: t,
+      knowns: [
+        { label: 'v₀', value: 0, unit: 'm/s' },
+        { label: 'vt', value: vt, unit: 'm/s' },
+        { label: 'a', value: a, unit: 'm/s²' }
+      ],
+      explanation: `Rumus: vt = v₀ + a.t → t = (vt - v₀) / a\nHitungan: (${vt} - 0) / ${a} = ${t} s`
+    };
+  } else { // Cari a
+    return {
+      question: `Untuk menarik jarak ${s} m dalam waktu ${t} detik (dari diam), berapa percepatan yang dibutuhkan?`,
+      variableNeeded: 'a (Percepatan)',
+      unit: 'm/s²',
+      answer: (2 * s) / (t * t),
+      knowns: [
+        { label: 'v₀', value: 0, unit: 'm/s' },
+        { label: 's', value: s, unit: 'm' },
+        { label: 't', value: t, unit: 's' }
+      ],
+      explanation: `Rumus: s = v₀.t + ½.a.t² (karena v₀=0)\na = 2.s / t²\nHitungan: (2 × ${s}) / ${t}² = ${(2*s)/(t*t)} m/s²`
+    };
+  }
+};
+
+// --- Komponen Utama ---
+
+export default function FishingPhysicsGame() {
+  const [gameState, setGameState] = useState<'menu' | 'playing' | 'animating' | 'result'>('menu');
+  const [difficulty, setDifficulty] = useState<Difficulty>('mudah');
+  const [problem, setProblem] = useState<Problem | null>(null);
+  
+  // State untuk 2 Tim
+  const [answerA, setAnswerA] = useState('');
+  const [answerB, setAnswerB] = useState('');
+  const [scoreA, setScoreA] = useState(0);
+  const [scoreB, setScoreB] = useState(0);
+  const [roundWinner, setRoundWinner] = useState<'A' | 'B' | 'none'>('none');
+  
+  // State Kesempatan (Nyawa)
+  const MAX_ATTEMPTS = 2;
+  const [attempts, setAttempts] = useState({ A: 0, B: 0 });
+  const [feedback, setFeedback] = useState<{ msg: string, team: 'A' | 'B' } | null>(null);
+
+  const [roundCount, setRoundCount] = useState(1);
+  const MAX_ROUNDS = 5;
+
+  // Animation Refs
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const animationFrameRef = useRef<number>();
+  
+  // Posisi Ikan (100 = Dasar Laut, 0 = Permukaan/Tertangkap)
+  const fishPosRef = useRef({ A: 100, B: 100 });
+  
+  const startGame = (diff: Difficulty) => {
+    setDifficulty(diff);
+    setScoreA(0);
+    setScoreB(0);
+    setRoundCount(1);
+    startRound(diff);
+  };
+
+  const startRound = (diff: Difficulty) => {
+    setGameState('playing');
+    setProblem(generateProblem(diff));
+    setAnswerA('');
+    setAnswerB('');
+    setRoundWinner('none');
+    setAttempts({ A: 0, B: 0 }); // Reset kesempatan
+    setFeedback(null);
+    fishPosRef.current = { A: 100, B: 100 }; // Reset posisi ikan ke dasar
+  };
+
+  const handleCheckAnswer = (team: 'A' | 'B') => {
+    if (!problem || gameState !== 'playing') return;
+    
+    // Cek apakah tim sudah kehabisan kesempatan
+    if (attempts[team] >= MAX_ATTEMPTS) return;
+
+    const val = parseFloat(team === 'A' ? answerA : answerB);
+    const correctVal = problem.answer;
+    const isCorrect = Math.abs(val - correctVal) < 0.1;
+
+    if (isCorrect) {
+      // Menang langsung
+      setGameState('animating'); 
+      setRoundWinner(team);
+      if (team === 'A') setScoreA(s => s + 1);
+      else setScoreB(s => s + 1);
+      animateFishing(team);
+    } else {
+      // Salah
+      const newAttempts = { ...attempts, [team]: attempts[team] + 1 };
+      setAttempts(newAttempts);
+
+      if (newAttempts[team] >= MAX_ATTEMPTS) {
+        // Kesempatan Habis untuk tim ini
+        setFeedback({ msg: 'Kesempatan Habis!', team });
+        
+        // Cek apakah KEDUA tim sudah habis?
+        const otherTeam = team === 'A' ? 'B' : 'A';
+        if (newAttempts[otherTeam] >= MAX_ATTEMPTS) {
+           // Dua-duanya gagal
+           setGameState('animating');
+           setRoundWinner('none');
+           animateFishing('none');
+        }
+      } else {
+        // Masih ada kesempatan
+        setFeedback({ msg: 'Salah! Coba lagi.', team });
+        // Hapus input agar bisa isi ulang
+        if (team === 'A') setAnswerA('');
+        else setAnswerB('');
+        
+        // Hilangkan pesan error setelah 1.5 detik
+        setTimeout(() => setFeedback(null), 1500);
+      }
+    }
+  };
+
+  const animateFishing = (winner: 'A' | 'B' | 'none') => {
+    const speed = 1.5;
+    let progress = 0;
+
+    const render = () => {
+      progress += speed;
+      
+      // Update posisi ikan
+      if (winner === 'A') {
+        fishPosRef.current.A = Math.max(0, 100 - progress * 1.5); // Tim A naik cepat
+        fishPosRef.current.B = Math.max(20, 100 - progress * 0.2); // Tim B lambat
+      } else if (winner === 'B') {
+        fishPosRef.current.B = Math.max(0, 100 - progress * 1.5); // Tim B naik cepat
+        fishPosRef.current.A = Math.max(20, 100 - progress * 0.2); // Tim A lambat
+      } else {
+        // Tidak ada yang menang
+        fishPosRef.current.A = 100;
+        fishPosRef.current.B = 100;
+      }
+
+      drawScene();
+
+      if (progress < 100) {
+        animationFrameRef.current = requestAnimationFrame(render);
+      } else {
+        setGameState('result');
+        if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+    render();
+  };
+
+  // --- Drawing Logic (Canvas) ---
+  const drawScene = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+
+    const w = canvas.width;
+    const h = canvas.height;
+    const waterLevel = h * 0.25; 
+
+    // 1. Langit
+    const gradientSky = ctx.createLinearGradient(0, 0, 0, waterLevel);
+    gradientSky.addColorStop(0, '#87CEEB');
+    gradientSky.addColorStop(1, '#E0F7FA');
+    ctx.fillStyle = gradientSky;
+    ctx.fillRect(0, 0, w, waterLevel);
+
+    // 2. Laut
+    const gradientSea = ctx.createLinearGradient(0, waterLevel, 0, h);
+    gradientSea.addColorStop(0, '#0288D1');
+    gradientSea.addColorStop(1, '#01579B');
+    ctx.fillStyle = gradientSea;
+    ctx.fillRect(0, waterLevel, w, h - waterLevel);
+
+    // Efek Gelombang
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.lineWidth = 3;
+    ctx.moveTo(0, waterLevel);
+    for (let i = 0; i < w; i += 20) {
+       ctx.quadraticCurveTo(i + 10, waterLevel - 5, i + 20, waterLevel);
+    }
+    ctx.stroke();
+
+    // 3. Render Tim A & Tim B
+    drawAngler(ctx, w * 0.2, waterLevel - 15, fishPosRef.current.A, h, '#F44336', 'TIM A'); 
+    drawAngler(ctx, w * 0.8, waterLevel - 15, fishPosRef.current.B, h, '#2196F3', 'TIM B');    
+  };
+
+  const drawAngler = (ctx: CanvasRenderingContext2D, x: number, boatY: number, fishProgress: number, h: number, color: string, label: string) => {
+    const waterLevel = h * 0.25;
+    const seaDepth = h - waterLevel;
+    
+    // Posisi Ikan (Y)
+    const fishY = waterLevel + (fishProgress / 100) * (seaDepth - 40);
+
+    // Tali Pancing
+    ctx.beginPath();
+    ctx.moveTo(x + 35, boatY - 40); 
+    ctx.lineTo(x + 35, fishY);      
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Perahu
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(x - 45, boatY);
+    ctx.lineTo(x + 45, boatY);
+    ctx.quadraticCurveTo(x + 25, boatY + 35, x - 25, boatY + 35);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Label
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.font = 'bold 14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, x, boatY - 50);
+
+    // Orang
+    ctx.fillStyle = '#333';
+    ctx.beginPath(); // Kepala
+    ctx.arc(x, boatY - 30, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath(); // Badan Stick
+    ctx.moveTo(x, boatY - 30);
+    ctx.lineTo(x, boatY);
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#333';
+    ctx.stroke();
+    ctx.beginPath(); // Tangan
+    ctx.moveTo(x, boatY - 20);
+    ctx.lineTo(x + 20, boatY - 15);
+    ctx.stroke();
+
+    // Joran
+    ctx.beginPath();
+    ctx.moveTo(x + 10, boatY - 10); 
+    ctx.lineTo(x + 35, boatY - 40); 
+    ctx.strokeStyle = '#5D4037';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    // Ikan
+    drawFish(ctx, x + 35, fishY, color);
+  };
+
+  const drawFish = (ctx: CanvasRenderingContext2D, x: number, y: number, color: string) => {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.ellipse(x, y, 14, 9, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath(); // Ekor
+    ctx.moveTo(x - 12, y);
+    ctx.lineTo(x - 20, y - 8);
+    ctx.lineTo(x - 20, y + 8);
+    ctx.fill();
+    ctx.fillStyle = 'white'; // Mata
+    ctx.beginPath();
+    ctx.arc(x + 7, y - 3, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'black';
+    ctx.beginPath();
+    ctx.arc(x + 8, y - 3, 1, 0, Math.PI * 2);
+    ctx.fill();
+  };
+
+  useEffect(() => {
+    if (gameState === 'playing' || gameState === 'menu') {
+        fishPosRef.current = { A: 100, B: 100 };
+        setTimeout(drawScene, 50);
+        const handleResize = () => requestAnimationFrame(drawScene);
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }
+  }, [gameState]);
+
+
+  // --- UI Renders ---
+
+  const renderMenu = () => (
+    <div className="relative flex flex-col items-center justify-center h-full w-full overflow-hidden animate-in fade-in">
+      {/* Background Layer */}
+      <div className="absolute inset-0 z-0">
+         {/* Sky */}
+         <div className="h-[60%] w-full bg-gradient-to-b from-sky-400 via-sky-300 to-sky-200"></div>
+         {/* Sea Horizon */}
+         <div className="h-[10%] w-full bg-blue-600"></div>
+         {/* Sand */}
+         <div className="h-[30%] w-full bg-[#f4e2b0]"></div>
+         
+         {/* Decor Elements */}
+         <div className="absolute top-10 right-10 animate-pulse">
+            <Sun className="w-24 h-24 text-yellow-400 fill-yellow-400 drop-shadow-lg" />
+         </div>
+         <div className="absolute top-20 left-20 opacity-80">
+            <Cloud className="w-20 h-16 text-white fill-white" />
+         </div>
+         <div className="absolute top-32 right-1/3 opacity-60">
+            <Cloud className="w-16 h-12 text-white fill-white" />
+         </div>
+         
+         {/* Palm Trees */}
+         <div className="absolute bottom-[20%] left-10 transform -translate-y-1/2">
+             <Palmtree className="w-48 h-48 text-green-700 fill-green-700 drop-shadow-xl" />
+         </div>
+         <div className="absolute bottom-[20%] right-10 transform -translate-y-1/2 scale-x-[-1]">
+             <Palmtree className="w-32 h-32 text-green-800 fill-green-800 drop-shadow-xl" />
+         </div>
+
+         {/* Boat on Horizon */}
+         <div className="absolute top-[60%] left-1/3 transform -translate-y-full animate-bounce duration-[3000ms]">
+            <Anchor className="w-16 h-16 text-red-600 drop-shadow-md" />
+            <div className="w-24 h-8 bg-red-500 rounded-b-full absolute -bottom-2 -left-4 shadow-md"></div>
+            <div className="w-2 h-16 bg-brown-600 absolute bottom-4 left-8 bg-amber-900"></div>
+            <div className="w-0 h-0 border-l-[20px] border-l-transparent border-r-[20px] border-r-transparent border-b-[40px] border-b-white absolute bottom-10 left-6"></div>
+         </div>
+      </div>
+
+      {/* Content Layer */}
+      <div className="z-10 bg-white/80 backdrop-blur-sm p-8 rounded-3xl shadow-2xl border-4 border-sky-300 max-w-2xl w-full mx-4 text-center">
+        <div className="space-y-4 mb-8">
+            <div className="inline-block p-4 bg-blue-100 rounded-full mb-2 shadow-inner">
+                <Fish className="w-16 h-16 text-blue-600" />
+            </div>
+            <h1 className="text-4xl md:text-5xl font-extrabold text-blue-900 leading-tight">
+            Game Memancing GLBB<br/>
+            <span className="text-orange-600 italic">"Pak Ipoel"</span>
+            </h1>
+            <p className="text-blue-700 font-medium text-lg">
+            Persaingan seru 2 Tim! Jawab soal fisika dengan benar untuk mendapatkan ikan.
+            <br/><span className="text-sm bg-blue-200 px-2 py-1 rounded text-blue-900 mt-2 inline-block">2x Kesempatan Menjawab per Ronde</span>
+            </p>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-6 justify-center">
+            <button 
+            onClick={() => startGame('mudah')}
+            className="flex-1 group p-4 bg-white border-2 border-green-500 rounded-2xl hover:bg-green-50 shadow-md hover:shadow-xl hover:-translate-y-1 transition-all"
+            >
+            <div className="flex items-center justify-center gap-2 mb-2">
+                <div className="bg-green-100 p-2 rounded-full">
+                    <Fish className="w-6 h-6 text-green-600 group-hover:scale-110 transition-transform" />
+                </div>
+                <h3 className="text-xl font-bold text-gray-800">Level Mudah</h3>
+            </div>
+            <p className="text-xs text-gray-500 font-medium">Fokus pada Jarak & Kecepatan.</p>
+            </button>
+
+            <button 
+            onClick={() => startGame('sedang')}
+            className="flex-1 group p-4 bg-white border-2 border-orange-500 rounded-2xl hover:bg-orange-50 shadow-md hover:shadow-xl hover:-translate-y-1 transition-all"
+            >
+            <div className="flex items-center justify-center gap-2 mb-2">
+                <div className="bg-orange-100 p-2 rounded-full">
+                    <Settings className="w-6 h-6 text-orange-600 group-hover:rotate-45 transition-transform" />
+                </div>
+                <h3 className="text-xl font-bold text-gray-800">Level Sedang</h3>
+            </div>
+            <p className="text-xs text-gray-500 font-medium">Soal GLBB Lengkap & Menantang.</p>
+            </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderGame = () => (
+    <div className="flex flex-col h-full bg-slate-50 relative">
+      {/* 1. Scoreboard & Menu Button */}
+      <div className="bg-white p-3 shadow-sm border-b flex justify-between items-center z-10 h-16 shrink-0 relative">
+        <button 
+            onClick={() => setGameState('menu')}
+            className="absolute left-4 top-1/2 -translate-y-1/2 flex items-center gap-2 text-gray-500 hover:text-red-600 font-bold text-sm bg-gray-100 hover:bg-red-50 px-3 py-1.5 rounded-lg transition-colors"
+        >
+            <Home className="w-4 h-4" />
+            <span className="hidden sm:inline">Menu Utama</span>
+        </button>
+
+        <div className="flex-1 flex justify-center items-center gap-12 font-bold text-xl px-4">
+            <div className="flex flex-col items-center">
+                <span className="text-xs text-red-500 uppercase tracking-widest">Tim A</span>
+                <span className="text-2xl text-red-600">{scoreA}</span>
+            </div>
+            <div className="flex flex-col items-center">
+                 <span className="bg-slate-100 text-slate-700 px-3 py-1 rounded-full text-xs font-bold uppercase mb-1">
+                    Ronde {roundCount} / {MAX_ROUNDS}
+                </span>
+                <span className="text-gray-300 text-sm">VS</span>
+            </div>
+            <div className="flex flex-col items-center">
+                <span className="text-xs text-blue-500 uppercase tracking-widest">Tim B</span>
+                <span className="text-2xl text-blue-600">{scoreB}</span>
+            </div>
+        </div>
+      </div>
+
+      {/* 2. Visualization Area */}
+      <div className="relative flex-grow bg-blue-100 overflow-hidden">
+        <canvas 
+            ref={canvasRef} 
+            className="w-full h-full block"
+        />
+        {/* Floating Question - Tengah Bawah */}
+        {gameState === 'playing' && problem && (
+          <div className="absolute top-[60%] left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-[90%] max-w-3xl bg-white/90 backdrop-blur border-2 border-blue-300 shadow-xl rounded-2xl p-6 text-center z-10 animate-in slide-in-from-bottom-5">
+             <div className="flex items-center justify-center gap-2 mb-2">
+                <Zap className="w-5 h-5 text-yellow-500 fill-yellow-500" />
+                <span className="text-sm font-black text-blue-800 uppercase tracking-wide">Soal Rebutan</span>
+             </div>
+             <p className="text-xl font-bold text-gray-800 leading-tight mb-4">{problem.question}</p>
+             <div className="flex flex-wrap justify-center gap-3">
+                {problem.knowns.map((k, idx) => (
+                    <span key={idx} className="bg-blue-100 px-3 py-1 rounded-full text-sm font-bold text-blue-900 font-mono border border-blue-200">
+                        {k.label} = {k.value} {k.unit}
+                    </span>
+                ))}
+             </div>
+          </div>
+        )}
+      </div>
+      
+      {/* 3. Controls Area */}
+      <div className="bg-white border-t-4 border-slate-200 h-auto shrink-0 p-4 shadow-[0_-5px_15px_rgba(0,0,0,0.05)]">
+        {gameState === 'playing' && problem ? (
+            <div className="flex gap-4 max-w-5xl mx-auto h-full">
+                {/* Tim A Input */}
+                <div className={`flex-1 p-4 rounded-xl border-2 flex flex-col justify-center relative transition-colors ${attempts.A >= MAX_ATTEMPTS ? 'bg-gray-100 border-gray-200 opacity-70' : 'bg-red-50 border-red-100'}`}>
+                    <label className="text-red-800 font-bold text-sm mb-2 flex justify-between items-center uppercase">
+                        <span>Tim A (Merah)</span>
+                        <span className="bg-white px-2 py-0.5 rounded text-xs border">
+                            Kesempatan: {MAX_ATTEMPTS - attempts.A}
+                        </span>
+                    </label>
+                    <div className="flex gap-2">
+                        <input 
+                            type="number" 
+                            value={answerA}
+                            onChange={(e) => setAnswerA(e.target.value)}
+                            disabled={attempts.A >= MAX_ATTEMPTS}
+                            className="flex-1 p-2 text-center text-xl font-bold border border-red-200 rounded-lg focus:ring-2 focus:ring-red-400 outline-none disabled:bg-gray-200 disabled:text-gray-400"
+                            placeholder={attempts.A >= MAX_ATTEMPTS ? "Terkunci" : "?"}
+                            onKeyDown={(e) => e.key === 'Enter' && handleCheckAnswer('A')}
+                        />
+                        <button 
+                            onClick={() => handleCheckAnswer('A')}
+                            disabled={attempts.A >= MAX_ATTEMPTS}
+                            className="bg-red-500 hover:bg-red-600 disabled:bg-gray-400 text-white font-bold px-6 rounded-lg shadow-sm transition-colors"
+                        >
+                            GO
+                        </button>
+                    </div>
+                    {feedback?.team === 'A' && (
+                        <div className="absolute -top-10 left-0 right-0 text-center">
+                            <span className="bg-red-600 text-white px-3 py-1 rounded-full text-sm font-bold shadow-lg animate-bounce">
+                                {feedback.msg}
+                            </span>
+                        </div>
+                    )}
+                </div>
+
+                {/* Tim B Input */}
+                <div className={`flex-1 p-4 rounded-xl border-2 flex flex-col justify-center relative transition-colors ${attempts.B >= MAX_ATTEMPTS ? 'bg-gray-100 border-gray-200 opacity-70' : 'bg-blue-50 border-blue-100'}`}>
+                    <label className="text-blue-800 font-bold text-sm mb-2 flex justify-between items-center uppercase">
+                        <span>Tim B (Biru)</span>
+                        <span className="bg-white px-2 py-0.5 rounded text-xs border">
+                            Kesempatan: {MAX_ATTEMPTS - attempts.B}
+                        </span>
+                    </label>
+                    <div className="flex gap-2">
+                        <input 
+                            type="number" 
+                            value={answerB}
+                            onChange={(e) => setAnswerB(e.target.value)}
+                            disabled={attempts.B >= MAX_ATTEMPTS}
+                            className="flex-1 p-2 text-center text-xl font-bold border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-400 outline-none disabled:bg-gray-200 disabled:text-gray-400"
+                            placeholder={attempts.B >= MAX_ATTEMPTS ? "Terkunci" : "?"}
+                            onKeyDown={(e) => e.key === 'Enter' && handleCheckAnswer('B')}
+                        />
+                        <button 
+                            onClick={() => handleCheckAnswer('B')}
+                            disabled={attempts.B >= MAX_ATTEMPTS}
+                            className="bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 text-white font-bold px-6 rounded-lg shadow-sm transition-colors"
+                        >
+                            GO
+                        </button>
+                    </div>
+                    {feedback?.team === 'B' && (
+                        <div className="absolute -top-10 left-0 right-0 text-center">
+                            <span className="bg-blue-600 text-white px-3 py-1 rounded-full text-sm font-bold shadow-lg animate-bounce">
+                                {feedback.msg}
+                            </span>
+                        </div>
+                    )}
+                </div>
+            </div>
+        ) : (
+            <div className="h-24 flex items-center justify-center text-gray-400 font-bold text-lg animate-pulse">
+                {gameState === 'animating' ? 'Memeriksa Jawaban...' : 'Persiapan Ronde Berikutnya...'}
+            </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderResult = () => (
+    <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in">
+        <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden transform scale-100 transition-all">
+            <div className={`p-6 text-center ${
+                roundWinner === 'A' ? 'bg-red-100 text-red-900' : 
+                roundWinner === 'B' ? 'bg-blue-100 text-blue-900' : 'bg-gray-100 text-gray-800'
+            }`}>
+                {roundWinner === 'none' ? (
+                    <XCircle className="w-16 h-16 mx-auto mb-4 text-gray-500" />
+                ) : (
+                    <Trophy className={`w-16 h-16 mx-auto mb-4 ${roundWinner === 'A' ? 'text-red-600' : 'text-blue-600'}`} />
+                )}
+                
+                <h2 className="text-3xl font-black uppercase tracking-wide mb-1">
+                    {roundWinner === 'A' ? 'TIM A MENANG!' : 
+                     roundWinner === 'B' ? 'TIM B MENANG!' : 'RONDE SERI!'}
+                </h2>
+                <p className="text-sm font-medium opacity-80">
+                    {roundWinner === 'none' 
+                        ? `Kedua tim kehabisan kesempatan.` 
+                        : `Ikan berhasil ditangkap oleh tim ${roundWinner === 'A' ? 'Merah' : 'Biru'}.`
+                    }
+                </p>
+            </div>
+            
+            <div className="p-6 bg-white space-y-6">
+                <div>
+                    <h4 className="text-xs font-bold text-gray-400 uppercase mb-2 flex items-center gap-2">
+                        <HelpCircle className="w-4 h-4" />
+                        Pembahasan Soal
+                    </h4>
+                    <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 text-sm font-mono text-slate-700 whitespace-pre-wrap leading-relaxed">
+                        {problem?.explanation}
+                    </div>
+                    <div className="mt-2 text-right text-xs font-bold text-green-600">
+                        Jawaban Benar: {problem?.answer.toFixed(2)} {problem?.unit}
+                    </div>
+                </div>
+
+                <div className="flex gap-3 pt-2">
+                    {roundCount < MAX_ROUNDS ? (
+                        <button 
+                            onClick={() => {
+                                setRoundCount(r => r + 1);
+                                startRound(difficulty);
+                            }}
+                            className="flex-1 bg-gray-900 hover:bg-black text-white py-3.5 rounded-xl font-bold transition-all shadow-lg hover:shadow-xl active:scale-95"
+                        >
+                            Ronde Berikutnya ({roundCount + 1}/{MAX_ROUNDS})
+                        </button>
+                    ) : (
+                        <div className="w-full space-y-3">
+                             <div className="text-center py-4 bg-gray-50 rounded-xl border border-gray-100">
+                                <span className="block text-xs font-bold text-gray-400 uppercase mb-1">SKOR AKHIR</span>
+                                <div className="text-3xl font-black flex items-center justify-center gap-6">
+                                    <span className="text-red-600">{scoreA}</span>
+                                    <span className="text-gray-300">-</span>
+                                    <span className="text-blue-600">{scoreB}</span>
+                                </div>
+                                <div className="text-sm font-bold mt-2 text-gray-600">
+                                    {scoreA > scoreB ? 'TIM A JUARA!' : scoreB > scoreA ? 'TIM B JUARA!' : 'SERI!'}
+                                </div>
+                             </div>
+                            <button 
+                                onClick={() => setGameState('menu')}
+                                className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-bold transition-colors"
+                            >
+                                Kembali ke Menu Utama
+                            </button>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    </div>
+  );
+
+  return (
+    <div className="w-full h-screen font-sans bg-gray-100 flex items-center justify-center p-4">
+        <div className="w-full max-w-6xl h-full max-h-[90vh] bg-white shadow-2xl rounded-2xl overflow-hidden relative border border-gray-200 flex flex-col">
+            {gameState === 'menu' ? renderMenu() : (
+                <>
+                    {renderGame()}
+                    {gameState === 'result' && renderResult()}
+                </>
+            )}
+        </div>
+    </div>
+  );
+}
